@@ -1,0 +1,94 @@
+76a77,94
+> 
+>         # Native no-rope MLA (qk_rope_head_dim == 0, e.g. GLM-5.3-Flash):
+>         # the SM120 GLM-NSA kernel requires a d_qk=576 layout, so we store the
+>         # 512-wide latent KV in the fp8_ds_mla blob with the 64 rope slots
+>         # zero-filled, and pad the (latent) query with 64 zero rope dims. The
+>         # zero rope dims contribute exactly 0 to every dot product, so the
+>         # 576-wide kernel computes the same attention as a native no-rope one.
+>         self.is_nope_mla = self.qk_rope_head_dim == 0
+>         if self.is_nope_mla and (
+>             self.qk_nope_head_dim != 256 or self.kv_lora_rank != 512
+>         ):
+>             raise NotImplementedError(
+>                 "FLASHINFER_MLA_SPARSE_SM120 no-rope support requires "
+>                 "qk_nope_head_dim=256 and kv_lora_rank=512, got "
+>                 f"qk_nope_head_dim={self.qk_nope_head_dim}, "
+>                 f"kv_lora_rank={self.kv_lora_rank}"
+>             )
+> 
+86a105,118
+>         # kpool (key-pooling) indexer: the top-k buffer reserves (kpool - 1)
+>         # columns after index_topk for the incomplete trailing pool ("tail"),
+>         # then rounds the whole width up to a multiple of 128 (see
+>         # models/glm5next/nvidia/model.py). The SM120 GLM kernel requires the
+>         # page table to be exactly index_topk wide, so forward_mqa folds the
+>         # tail columns into the last top-k slots before truncating.
+>         hf_text_config = (
+>             vllm_config.model_config.hf_text_config
+>             if vllm_config.model_config is not None
+>             else None
+>         )
+>         kpool = getattr(hf_text_config, "index_kpool", None)
+>         self.kpool_tail_width: int = (int(kpool) - 1) if kpool and int(kpool) > 1 else 0
+> 
+105a138,164
+>     def do_kv_cache_update(
+>         self,
+>         kv_c_normed: torch.Tensor,
+>         k_pe: torch.Tensor,
+>         kv_cache: torch.Tensor,
+>         slot_mapping: torch.Tensor,
+>         kv_cache_dtype: str,
+>         k_scale: torch.Tensor,
+>     ) -> None:
+>         # Same as MLAAttentionImpl.do_kv_cache_update, but for no-rope models
+>         # the incoming k_pe has 0 width while concat_and_cache_mla's
+>         # fp8_ds_mla path requires pe_dim=64: fill the rope slots with zeros.
+>         if kv_cache.numel() == 0:
+>             return
+>         if self.is_nope_mla and k_pe.shape[-1] == 0:
+>             k_pe = k_pe.new_zeros((*k_pe.shape[:-1], 64))
+>         from vllm import _custom_ops as ops
+> 
+>         ops.concat_and_cache_mla(
+>             kv_c_normed,
+>             k_pe.squeeze(1),
+>             kv_cache,
+>             slot_mapping.flatten(),
+>             kv_cache_dtype=kv_cache_dtype,
+>             scale=k_scale,
+>         )
+> 
+115a175,182
+>         # No-rope: pad the latent query (kv_lora_rank wide) to the d_qk=576
+>         # layout the SM120 GLM-NSA kernel expects; rope dims are zeros (see
+>         # __init__). Kernels with a real rope pass through unchanged.
+>         qk_rope_head_dim_arg = self.qk_rope_head_dim
+>         if self.is_nope_mla:
+>             q = torch.nn.functional.pad(q, (0, 64))
+>             qk_rope_head_dim_arg = 64
+> 
+131a199,216
+>         # The top-k buffer is wider than index_topk (kpool tail + 128-rounding).
+>         # The kernel wants exactly index_topk columns: move the tail entries
+>         # into the last top-k slots (dropping that many lowest-ranked indexed
+>         # tokens) and truncate. Padding columns beyond the tail are -1 and
+>         # stay masked by the kernel.
+>         sparse_topk_capacity = attn_metadata.topk_tokens
+>         if topk_indices_physical.shape[1] != sparse_topk_capacity:
+>             tail_w = self.kpool_tail_width
+>             if tail_w:
+>                 topk_indices_physical[
+>                     :, sparse_topk_capacity - tail_w : sparse_topk_capacity
+>                 ] = topk_indices_physical[
+>                     :, sparse_topk_capacity : sparse_topk_capacity + tail_w
+>                 ]
+>             topk_indices_physical = topk_indices_physical[
+>                 :, :sparse_topk_capacity
+>             ].contiguous()
+> 
+150c235
+<             qk_rope_head_dim=self.qk_rope_head_dim,
+---
+>             qk_rope_head_dim=qk_rope_head_dim_arg,

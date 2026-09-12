@@ -1,0 +1,10 @@
+This repository includes a modified copy of a file from the vLLM project
+(https://github.com/vllm-project/vllm):
+
+    overlay/flashinfer_mla_sparse_sm120.py
+
+vLLM is licensed under the Apache License, Version 2.0.
+Copyright contributors to the vLLM project. The file retains its original
+SPDX license and copyright headers; the modifications made here are limited
+to that file and are distributed under the MIT license of this repository
+(see LICENSE).
