@@ -90,6 +90,12 @@ GLM-5.3-Flash 使用 sparse MLA（DSA 风格）；当前 build 的 sparse MLA ke
 4. **引号转义写错损失了 28 分钟（大概在 11:50）。** `--kernel-config` 传的 JSON 字符串在最外层双引号的 `bash -lc` 里需要加 `\"` 转义。我引号写挂了，容器启动直接报 `vllm serve: error` 秒退，而我的监控脚本又没抓到容器退出状态。监控脚本空转轮询了 28 分钟，我才去翻容器日志（#12）。
 5. **跑了 179 次生成才发现全卡在思考块里了（13:10）。** 整个 batch 里的每一次请求全都在 `max_tokens=1024` 被截断，返回的响应内容里全都是英文的思考过程（thinking trace）。因为该模型的 chat template 默认注入了 `<think>`，而且没有提供 `enable_thinking` 开关。直到整个 batch 全跑完，我才摸索出怎么解决（#14）。
 
+## 2026-09-13 — 原始基线速度与仅改配置的提速
+
+- 用原样发布的 serve 脚本测了原始基线：单流 10.75 tok/s（TPOT 中位数 95.3 ms、TTFT 中位数 0.361 s），并发 32 到 64 之间聚合约 95 tok/s 走平。标尺：64 条固定提示词，各生成 512 个 completion token，temperature 0，流式输出，0 次失败。
+- 仅改配置的收益：`--max-model-len` 从 131072 降到 16384，单流 TPOT 降了约 10%（中位数 95.3 ms → 86.0 ms，复测 85.2 ms），聚合吞吐不变，因此 `serve/glm-serve.sh` 现在出厂即为 16384。
+- 其余尝试全部在启动或加载阶段失败：MTP 投机解码（原生自动草稿与显式 BF16 草稿目录）、fastsafetensors 加载器、n-gram K=4。数字与逐项说明见 [README.zh.md](README.zh.md)。
+
 ## Open question
 
 哪个上游 vLLM 版本能在 sm_121 上原生运行 GLM-5 的稀疏 MLA（BF16 或 GLM 规格的 FP8）？一旦搞清楚这点，我就知道什么时候可以去掉这个 overlay 了。

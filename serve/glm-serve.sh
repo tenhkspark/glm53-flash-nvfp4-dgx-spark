@@ -68,7 +68,7 @@ docker run -d --name glm53-official-head --network host --gpus all --shm-size=32
     --kv-cache-dtype fp8 \
     --model-loader-extra-config '{\"enable_multithread_load\": true, \"num_threads\": 32}' \
     --max-num-batched-tokens 8192 --enable-chunked-prefill \
-    --max-num-seqs 32 --max-model-len 131072 \
+    --max-num-seqs 32 --max-model-len 16384 \
     --gpu-memory-utilization 0.85 \
     --limit-mm-per-prompt '{\"image\":0,\"video\":0}'"
 REMOTE

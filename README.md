@@ -110,6 +110,25 @@ Catch: because the `glm45` reasoning parser never encounters a closing `</think>
 - Ran 48 requests at 16 concurrent: 0 failures, 61.5 tok/s aggregate, case sat around 64–66 °C.
 - Bumped it to 32 concurrent for the follow-up production run without changing anything.
 
+### Stock baseline (single stream)
+
+Measured on 2026-09-13 with the serve scripts in this repo as shipped (all flags unchanged, `--max-model-len 131072`). Fixed ruler: the same 64 fixed prompts (frozen Japanese prose seeds), 512 completion tokens each, temperature 0, thinking skipped with the empty-assistant-continuation trick above, streaming responses, aggregate tok/s = total completion tokens / wall time, 0 failed requests at every level.
+
+- One request at a time (8 sequential prompts): 10.75 tok/s, TPOT median 95.3 ms (mean 92.5 ms), TTFT median 0.361 s.
+- Aggregate throughput climbs with concurrency and then goes flat at ~95 tok/s: 69.85 tok/s at 16 concurrent, 94.66 at 32, 95.08 at 64 (the server caps sequences at 32, so half of the 64 queue behind it).
+
+### Config-only tuning (2026-09-13)
+
+Dropping `--max-model-len` from the model max 131072 to 16384 (same ruler, same day) cut single-stream TPOT by ~10 %: median 95.3 ms → 86.0 ms (85.2 ms on a repeat run), with aggregate throughput unchanged (94.92 vs 94.66 tok/s at 32 concurrent, 95.63 vs 95.08 at 64) and the KV pool actually bigger under the smaller cap. `serve/glm-serve.sh` now ships 16384: real prompts never come close to 131072 tokens, and the model max just shrank the KV pool that actual requests share.
+
+What I tried besides the cap, one line each:
+- MTP speculative decoding, native auto-draft (no draft dir): engine died loading the BF16 draft expert weights into the NVFP4-packed expert buffer; the explicit BF16 draft dir failed the same way (the draft expert loader doesn't apply TP sharding in this image).
+- `--load-format fastsafetensors`: boot OOM — it maps whole shards eagerly and trips the memory monitor on the 128 GB unified-memory node.
+- n-gram speculation K=4: boot OOM as well.
+- The first 16384 attempt crashed at warmup, but that was a missing worker-side overlay mount in my test launcher, not the flag — clean boot on the re-run with the mount in place.
+
+Caveat: one afternoon, one workload (Japanese prose, 512-token outputs).
+
 ## Time spent
 
 From my first attempt to bring it up in the middle of the night on 2026-09-12 to the actual production run later that day (all times local):

@@ -87,5 +87,11 @@ Not just the obstacles — the detours, and what they actually cost me:
 4. **28 minutes lost to a quoting slip (around 11:50).** The `--kernel-config` JSON needs `\"` inside the double-quoted `bash -lc` string. I messed up the quoting, the container immediately crashed with `vllm serve: error`, and my watcher script didn't detect the exit. The watcher polled an idle state for 28 minutes before I checked the container logs (#12).
 5. **179 generations truncated before I noticed the thinking block (13:10).** Every single request in the batch truncated at `max_tokens=1024` with only the English thinking trace in the response body. The chat template injects `<think>` by default and lacks an `enable_thinking` toggle. Only figured out the fix after the batch finished (#14).
 
+## 2026-09-13 — stock baseline speed and a config-only speed-up
+
+- Measured the stock baseline with the serve scripts as shipped: 10.75 tok/s single stream (TPOT median 95.3 ms, TTFT median 0.361 s), aggregate ~95 tok/s flat from 32 through 64 concurrent. Ruler: 64 fixed prompts, 512 completion tokens each, temperature 0, streaming, 0 failures.
+- Config-only win: `--max-model-len` 131072 → 16384 cut single-stream TPOT ~10 % (median 95.3 ms → 86.0 ms, repeat 85.2 ms) with aggregate throughput unchanged, so `serve/glm-serve.sh` now ships 16384.
+- Everything else I tried failed to boot or load: MTP speculation (native auto-draft and explicit BF16 draft dir), the fastsafetensors loader, and n-gram K=4. Numbers and per-arm one-liners in [README.md](README.md).
+
 ## Open question
 Which upstream vLLM version runs GLM-5's sparse MLA (BF16, or GLM-shaped FP8) natively on sm_121? Once I know that, I'll know when I can drop this overlay.
