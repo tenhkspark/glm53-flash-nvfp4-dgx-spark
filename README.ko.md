@@ -26,7 +26,7 @@ concat_and_cache_mla ... pe_dim must be 64 for fp8_ds_mla
 No valid attention backend found ... head_size=512, use_mla=True, use_sparse=True
 ```
 
-정리하자면 FP8 KV는 캐시 라이터에서 크래시가 나고, BF16은 사용할 수 있는 백엔드 자체가 없는 상태가 됩니다. 플래그를 어떻게 조합해도 동작하지 않습니다. 노드를 띄우려 시도하면서 겪은 14가지 이슈는 [LOG.md](LOG.md)에 모두 기록해 두었습니다.
+정리하자면 FP8 KV는 캐시 라이터에서 크래시가 나고, BF16은 사용할 수 있는 백엔드 자체가 없는 상태가 됩니다. 플래그를 어떻게 조합해도 동작하지 않습니다. 총 15가지 이슈를 [LOG.md](LOG.md)에 기록해 두었습니다: #1~#14는 노드를 띄우려 시도하면서 겪은 것들이고, #15는 나중에 공개한 파일만으로 진행한 재현 테스트입니다.
 
 ## 원인
 - GLM-5.3-Flash는 NSA 스타일의 토큰 선택 인덱서를 사용하는 sparse MLA 구조입니다. 쿼리당 상위 k개(top-k) 선택된 토큰만 어텐션 연산에 포함되며, 어텐션 자체는 RoPE 없이 동작합니다 (`qk_rope_head_dim=0`, `qk_nope_head_dim=256`, `kv_lora_rank=512`).
@@ -74,7 +74,7 @@ docker pull vllm/vllm-openai:glm53-flash-arm64-cu130
 # NVIDIA GLM-5.3-Flash-NVFP4 checkpoint, e.g. under ~/models/GLM-5.3-Flash-NVFP4
 ```
 
-2. 양쪽 노드의 동일한 디렉터리(예: `~/vllm-overlay/`)에 `overlay/flashinfer_mla_sparse_sm120.py`를 배치합니다 (또는 `serve/glm-serve.sh sync-overlay` 실행).
+2. 양쪽 노드의 동일한 디렉터리 `~/recipe-factory/vllm-overlay/`(`serve/glm-serve.sh`의 `REMOTE_OVERLAY` 기본값)에 `overlay/flashinfer_mla_sparse_sm120.py`를 배치합니다 (또는 `serve/glm-serve.sh sync-overlay`를 실행하면 이 경로로 복사됩니다).
 
 3. head를 먼저 띄운 뒤 worker를 실행합니다 (`CHANGEME` 값을 채워 넣거나 사전에 export합니다):
 ```bash
@@ -84,7 +84,7 @@ HEAD_IP=CHANGEME IFNAME=CHANGEME ./serve/start-head.sh
 # node B (worker)
 HEAD_IP=CHANGEME MY_IP=CHANGEME IFNAME=CHANGEME ./serve/start-worker.sh
 ```
-`HEAD_IP`와 `MY_IP`는 점대점 링크의 엔드포인트이며, `IFNAME`은 해당 IP를 전달하는 인터페이스입니다. 콜드 스타트는 약 13분 소요됩니다 (191 GB의 가중치). 기본값인 600 s는 타임아웃이 발생하므로 스크립트에서 `VLLM_ENGINE_READY_TIMEOUT_S`를 3600 s로 늘려 두었습니다.
+`HEAD_IP`와 `MY_IP`는 점대점 링크의 엔드포인트이며, `IFNAME`은 해당 IP를 전달하는 인터페이스입니다. 콜드 스타트는 약 14분 소요됩니다 (가중치 191 GB, 두 쌍에서 READY까지 실측 13분 47초와 14분 16초). 기본값인 600 s는 타임아웃이 발생하므로 스크립트에서 `VLLM_ENGINE_READY_TIMEOUT_S`를 3600 s로 늘려 두었습니다.
 
 4. 순서가 중요합니다. 이전 실행에서 남아 있는 기존 worker가 있다면 head를 재시작하기 전에 반드시 종료하고, 그 이후에 worker를 다시 띄워야 합니다. 이전 실행의 잔여 worker가 새 Ray 클러스터에 조인을 시도하면 session-mismatch 에러와 함께 head가 크래시됩니다. `serve/glm-serve.sh up`을 사용하면 이 시퀀스를 자동으로 처리합니다 (`down` / `up` / `status` / `smoke`).
 
@@ -109,7 +109,7 @@ GLM-5.3 챗 템플릿은 열린 `<think>` 태그를 강제 삽입하며(`add_gen
 
 ## 측정 결과 (2× DGX Spark, Ray 기반 TP=2)
 - 엔진 초기화에 105 s 소요되었고, KV 캐시는 노드당 7.69 GiB로 잡혔습니다 (`--max-model-len 131072`, fp8_ds_mla layout).
-- 동시 요청 수 16으로 총 48개 요청을 실행했습니다: 실패 0건, 총합 61.5 tok/s를 기록했으며, 케이스 온도는 대략 64–66 °C 수준을 유지했습니다.
+- 서버가 뜬 직후 동시 요청 수 16으로 총 48개 요청을 실행했습니다: 실패 0건, 케이스 온도는 대략 64–66 °C 수준을 유지했습니다. 이 실행은 생성 조건(요청 길이, max_tokens, temperature)을 기록해 두지 않아 tok/s 수치는 여기에 싣지 않습니다 — 동시 16에서 비교 가능한 수치는 아래 고정 조건의 69.85 tok/s입니다.
 - 설정 변경 없이 후속 프로덕션 런을 위해 동시 요청 수를 32로 올렸습니다.
 
 ### 기본 베이스라인(단일 스트림)
@@ -121,7 +121,7 @@ GLM-5.3 챗 템플릿은 열린 `<think>` 태그를 강제 삽입하며(`add_gen
 
 ### 설정만으로의 속도 향상(2026-09-13)
 
-`--max-model-len`을 모델 최댓값 131072에서 16384로 낮추자(같은 날, 같은 자) 단일 스트림 TPOT이 약 10 % 개선되었습니다: 중앙값 95.3 ms → 86.0 ms(반복 측정 85.2 ms). 집계 처리량은 변하지 않았고(동시 32에서 94.92 대 94.66 tok/s, 64에서 95.63 대 95.08), 오히려 상한을 줄인 쪽이 KV 풀이 더 컸습니다. `serve/glm-serve.sh`는 이제 16384를 출고값으로 합니다: 실제 프롬프트는 131072 토큰에 한참 못 미치므로, 모델 최댓값은 실제 요청들이 공유하는 KV 풀만 줄이고 있었습니다.
+`--max-model-len`을 모델 최댓값 131072에서 16384로 낮추자(같은 날, 같은 자) 단일 스트림 TPOT이 약 10 % 개선되었습니다: 중앙값 95.3 ms → 86.0 ms(반복 측정 85.2 ms). 집계 처리량은 변하지 않았고(동시 32에서 94.92 대 94.66 tok/s, 64에서 95.63 대 95.08), 오히려 상한을 줄인 쪽이 KV 풀이 더 컸습니다. `serve/glm-serve.sh`와 `serve/start-head.sh`는 이제 16384를 출고값으로 합니다: 실제 프롬프트는 131072 토큰에 한참 못 미치므로, 모델 최댓값은 실제 요청들이 공유하는 KV 풀만 줄이고 있었습니다.
 
 상한 외에 시도한 것들(각 한 줄):
 - MTP 추측 디코딩, 네이티브 자동 드래프트(드래프트 디렉터리 없음): BF16 드래프트 expert 가중치를 NVFP4 팩 expert 버퍼에 적재하다가 엔진이 죽었습니다. 명시적 BF16 드래프트 디렉터리도 같은 방식으로 실패(이 이미지의 드래프트 expert 로더는 TP 샤딩을 적용하지 않음).
@@ -144,7 +144,7 @@ GLM-5.3 챗 템플릿은 열린 `<think>` 태그를 강제 삽입하며(`add_gen
 | 07:40–11:30 | 근본 원인 분석, 오버레이 구성, sm_121 환경에서 독립 단위 테스트 5개 작성 및 실행 |
 | 11:30–11:50 | 오버레이 기동 1차 및 2차 시도 실패 |
 | 12:32 | 오버레이 3차 시도: 드디어 서버 정상 기동 (엔진 초기화에 105 s 소요) |
-| 12:35–12:47 | 검증 실행: 48개 요청, concurrency 16, 총합 61.5 tok/s 달성 |
+| 12:35–12:47 | 검증 실행: 48개 요청, concurrency 16, 실패 0건 |
 | ~12:50 | 32 concurrent 환경에서 학습 말뭉치 대상 프로덕션 런 시작 |
 
 총 기동 시도 횟수는 자체 빌드 6회, 공식 이미지 3회, 오버레이 3회였으며, 최종적으로 오버레이 3번째 시도에서 성공했습니다. 각 실패 지점과 대기 시간은 [LOG.md](LOG.md)에 기록해 두었습니다.

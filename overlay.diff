@@ -1,4 +1,11 @@
-76a77,94
+# Diff of vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py as shipped in
+# the image vllm/vllm-openai:glm53-flash-arm64-cu130 (left) against my overlay copy
+# overlay/flashinfer_mla_sparse_sm120.py (right). Apply with: patch <file> < overlay.diff
+2a3,5
+> # Modified: this file is the vLLM copy shipped inside the serving image
+> # vllm/vllm-openai:glm53-flash-arm64-cu130, changed by me to support no-rope
+> # MLA (qk_rope_head_dim == 0) on sm_121; see overlay.diff and NOTICE.
+76a80,97
 > 
 >         # Native no-rope MLA (qk_rope_head_dim == 0, e.g. GLM-5.3-Flash):
 >         # the SM120 GLM-NSA kernel requires a d_qk=576 layout, so we store the
@@ -17,7 +24,7 @@
 >                 f"kv_lora_rank={self.kv_lora_rank}"
 >             )
 > 
-86a105,118
+86a108,121
 >         # kpool (key-pooling) indexer: the top-k buffer reserves (kpool - 1)
 >         # columns after index_topk for the incomplete trailing pool ("tail"),
 >         # then rounds the whole width up to a multiple of 128 (see
@@ -32,7 +39,7 @@
 >         kpool = getattr(hf_text_config, "index_kpool", None)
 >         self.kpool_tail_width: int = (int(kpool) - 1) if kpool and int(kpool) > 1 else 0
 > 
-105a138,164
+105a141,167
 >     def do_kv_cache_update(
 >         self,
 >         kv_c_normed: torch.Tensor,
@@ -60,7 +67,7 @@
 >             scale=k_scale,
 >         )
 > 
-115a175,182
+115a178,185
 >         # No-rope: pad the latent query (kv_lora_rank wide) to the d_qk=576
 >         # layout the SM120 GLM-NSA kernel expects; rope dims are zeros (see
 >         # __init__). Kernels with a real rope pass through unchanged.
@@ -69,7 +76,7 @@
 >             q = torch.nn.functional.pad(q, (0, 64))
 >             qk_rope_head_dim_arg = 64
 > 
-131a199,216
+131a202,219
 >         # The top-k buffer is wider than index_topk (kpool tail + 128-rounding).
 >         # The kernel wants exactly index_topk columns: move the tail entries
 >         # into the last top-k slots (dropping that many lowest-ranked indexed
@@ -88,7 +95,7 @@
 >                 :, :sparse_topk_capacity
 >             ].contiguous()
 > 
-150c235
+150c238
 <             qk_rope_head_dim=self.qk_rope_head_dim,
 ---
 >             qk_rope_head_dim=qk_rope_head_dim_arg,

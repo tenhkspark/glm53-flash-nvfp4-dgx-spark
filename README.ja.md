@@ -26,7 +26,7 @@ concat_and_cache_mla ... pe_dim must be 64 for fp8_ds_mla
 No valid attention backend found ... head_size=512, use_mla=True, use_sparse=True
 ```
 
-要するに、FP8 KVではキャッシュライターがクラッシュし、BF16では対応するバックエンドが全く存在しない状態になります。フラグをどのように組み合わせても動作しませんでした。起動を試みる中で直面した全14件の事象については、[LOG.md](LOG.md) に記録しました。
+要するに、FP8 KVではキャッシュライターがクラッシュし、BF16では対応するバックエンドが全く存在しない状態になります。フラグをどのように組み合わせても動作しませんでした。全 15 件の事象を [LOG.md](LOG.md) に記録しました: #1〜#14 が起動を試みる中で直面したもの、#15 は公開したファイル一式で行った再現テストです。
 
 ## 原因
 - GLM-5.3-Flash は NSA スタイルのトークン選択インデクサーを備えた sparse MLA を採用しています。アテンションはクエリごとに上位 k 個の選択されたトークンのみを取得し、アテンション処理自体は no-rope（`qk_rope_head_dim=0`、`qk_nope_head_dim=256`、`kv_lora_rank=512`）で動作します。
@@ -74,7 +74,7 @@ docker pull vllm/vllm-openai:glm53-flash-arm64-cu130
 # NVIDIA GLM-5.3-Flash-NVFP4 checkpoint, e.g. under ~/models/GLM-5.3-Flash-NVFP4
 ```
 
-2. `overlay/flashinfer_mla_sparse_sm120.py` を両ノードの同一ディレクトリ（例: `~/vllm-overlay/`）に配置します（あるいは `serve/glm-serve.sh sync-overlay` を実行します）。
+2. `overlay/flashinfer_mla_sparse_sm120.py` を両ノードの同一ディレクトリ `~/recipe-factory/vllm-overlay/`（`serve/glm-serve.sh` の `REMOTE_OVERLAY` 既定値）に配置します（あるいは `serve/glm-serve.sh sync-overlay` を実行するとここにコピーされます）。
 
 3. headを起動した後にworkerを起動します（`CHANGEME` の値を埋めるか、事前にexportしておきます）。
 ```bash
@@ -83,7 +83,7 @@ HEAD_IP=CHANGEME IFNAME=CHANGEME ./serve/start-head.sh
 # node B (worker)
 HEAD_IP=CHANGEME MY_IP=CHANGEME IFNAME=CHANGEME ./serve/start-worker.sh
 ```
-`HEAD_IP` と `MY_IP` はpoint-to-pointリンクのエンドポイントです。`IFNAME` はそのIPが割り当てられているインターフェースです。コールドスタートには約13分かかります（重み191 GB）。デフォルトの600秒ではタイムアウトするため、スクリプト側で `VLLM_ENGINE_READY_TIMEOUT_S` を3600秒に引き上げています。
+`HEAD_IP` と `MY_IP` はpoint-to-pointリンクのエンドポイントです。`IFNAME` はそのIPが割り当てられているインターフェースです。コールドスタートには約 14 分かかります（重み 191 GB、2 ペアでの実測は READY まで 13 分 47 秒と 14 分 16 秒）。デフォルトの600秒ではタイムアウトするため、スクリプト側で `VLLM_ENGINE_READY_TIMEOUT_S` を3600秒に引き上げています。
 
 4. 起動順序に注意が必要です。前回の実行時の古いworkerが残っている場合は、headを再起動する前に必ず停止させ、その後にworkerを再起動します。残存したworkerが新しいRayクラスタに参加しようとすると、session-mismatchエラーでheadがクラッシュします。`serve/glm-serve.sh up` を使えば、この一連の手順（`down` / `up` / `status` / `smoke`）が自動で処理されます。
 
@@ -110,7 +110,7 @@ GLM-5.3のチャットテンプレートは `<think>` タグを強制的に開�
 
 ## 実測（2× DGX Spark、Ray 経由の TP=2）
 - Engine init に 105 s かかりました。KV cache はノードあたり 7.69 GiB となりました（`--max-model-len 131072`、fp8_ds_mla layout）。
-- 並列数 16 で 48 リクエストを実行しました。失敗は 0 件、全体で 61.5 tok/s となり、筐体温度はおよそ 64–66 °C で推移しました。
+- サーバー起動直後、並列数 16 で 48 リクエストを実行しました。失敗は 0 件、筐体温度はおよそ 64–66 °C で推移しました。この実行は生成条件（リクエスト長・max_tokens・temperature）を記録していないため、tok/s の数値はここには出しません — 並列 16 で比較できるのは、下の固定条件での 69.85 tok/s です。
 - その後の本番実行に向けて、設定は一切変更せずに並列数を 32 に引き上げました。
 
 ### 素のベースライン（単一ストリーム）
@@ -122,7 +122,7 @@ GLM-5.3のチャットテンプレートは `<think>` タグを強制的に開�
 
 ### 設定だけの高速化（2026-09-13）
 
-`--max-model-len` をモデル最大値の 131072 から 16384 に下げると（同日・同じ計測条件）、単一ストリームの TPOT が約 10 % 改善しました: 中央値 95.3 ms → 86.0 ms（再測定では 85.2 ms）。集計スループットは変わらず（並列 32 で 94.92 対 94.66 tok/s、64 で 95.63 対 95.08）、KV プールはむしろ小さい上限のほうが大きくなりました。`serve/glm-serve.sh` は 16384 を出荷値にしています: 実際のプロンプトは 131072 トークンに遠く及ばないため、モデル最大値は実際のリクエストが共有する KV プールを縮めていただけです。
+`--max-model-len` をモデル最大値の 131072 から 16384 に下げると（同日・同じ計測条件）、単一ストリームの TPOT が約 10 % 改善しました: 中央値 95.3 ms → 86.0 ms（再測定では 85.2 ms）。集計スループットは変わらず（並列 32 で 94.92 対 94.66 tok/s、64 で 95.63 対 95.08）、KV プールはむしろ小さい上限のほうが大きくなりました。`serve/glm-serve.sh` と `serve/start-head.sh` は 16384 を出荷値にしています: 実際のプロンプトは 131072 トークンに遠く及ばないため、モデル最大値は実際のリクエストが共有する KV プールを縮めていただけです。
 
 上限以外に試したこと（各 1 行）:
 - MTP 推測デコーディング、ネイティブ自動ドラフト（ドラフト dir なし）: BF16 のドラフト expert 重みを NVFP4 パックの expert バッファへロード中にエンジンが死亡。明示 BF16 ドラフト dir も同じ形で失敗（このイメージのドラフト expert ローダーは TP シャーディングを適用しないため）。
@@ -145,7 +145,7 @@ GLM-5.3のチャットテンプレートは `<think>` タグを強制的に開�
 | 07:40–11:30 | 根本原因を特定し、オーバーレイを作成。sm_121 上で5つの単体テストを作成して実行 |
 | 11:30–11:50 | オーバーレイの起動試行1回目と2回目が失敗 |
 | 12:32 | オーバーレイ試行3回目：サーバーがようやく起動（engine init に 105 s） |
-| 12:35–12:47 | 検証を実行：48 requests、concurrency 16、全体で 61.5 tok/s を記録 |
+| 12:35–12:47 | 検証を実行：48 requests、concurrency 16、失敗 0 件 |
 | ~12:50 | 32 concurrent で学習コーパスの本番実行を開始 |
 
 起動試行回数の合計は、独自ビルドで6回、公式イメージで3回、オーバーレイで3回でした。最終的にオーバーレイの3回目で動作しました。待ち時間と各失敗の停止箇所については [LOG.md](LOG.md) に記録してあります。

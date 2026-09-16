@@ -1,10 +1,21 @@
-This repository includes a modified copy of a file from the vLLM project
-(https://github.com/vllm-project/vllm):
+This repository is licensed under the MIT license (see LICENSE), with one
+exception.
 
-    overlay/flashinfer_mla_sparse_sm120.py
+Exception: overlay/flashinfer_mla_sparse_sm120.py
 
-vLLM is licensed under the Apache License, Version 2.0.
-Copyright contributors to the vLLM project. The file retains its original
-SPDX license and copyright headers; the modifications made here are limited
-to that file and are distributed under the MIT license of this repository
-(see LICENSE).
+    This file is a modified copy of a file from the vLLM project
+    (https://github.com/vllm-project/vllm), taken from the serving image
+    vllm/vllm-openai:glm53-flash-arm64-cu130. vLLM is licensed under the
+    Apache License, Version 2.0; a copy of that license is in
+    LICENSE-APACHE-2.0.
+
+    Copyright contributors to the vLLM project.
+
+    This file, including my modifications to it, stays under the Apache
+    License, Version 2.0. The modifications add a no-rope MLA path
+    (qk_rope_head_dim == 0) for sm_121 and are marked in the file header
+    as required by section 4(b) of that license. overlay.diff shows the
+    same modifications as a diff.
+
+Everything else in this repository (the serve scripts and the documentation)
+is under the MIT license.

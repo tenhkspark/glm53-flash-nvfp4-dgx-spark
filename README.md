@@ -24,7 +24,7 @@ When I forced `--kv-cache-dtype bfloat16`, the failure just moved somewhere else
 No valid attention backend found ... head_size=512, use_mla=True, use_sparse=True
 ```
 
-Basically, FP8 KV crashes the cache writer, and BF16 leaves me with no backend at all. None of the flag combinations work. I logged all 14 issues I hit while trying to get it up in [LOG.md](LOG.md).
+Basically, FP8 KV crashes the cache writer, and BF16 leaves me with no backend at all. None of the flag combinations work. I logged all 15 issues in [LOG.md](LOG.md): #1-#14 are the ones I hit while trying to get it up, #15 is the release test I ran later on the published files.
 
 ## Cause
 - GLM-5.3-Flash uses sparse MLA with an NSA-style token-selection indexer: attention only pulls the top-k selected tokens per query, and the attention itself runs no-rope — `qk_rope_head_dim=0`, `qk_nope_head_dim=256`, and `kv_lora_rank=512`.
@@ -70,7 +70,7 @@ docker pull vllm/vllm-openai:glm53-flash-arm64-cu130
 # NVIDIA GLM-5.3-Flash-NVFP4 checkpoint, e.g. under ~/models/GLM-5.3-Flash-NVFP4
 ```
 
-2. Drop `overlay/flashinfer_mla_sparse_sm120.py` in the same directory on both nodes, like `~/vllm-overlay/` (or run `serve/glm-serve.sh sync-overlay`).
+2. Drop `overlay/flashinfer_mla_sparse_sm120.py` in the same directory on both nodes: `~/recipe-factory/vllm-overlay/`, the default `REMOTE_OVERLAY` in `serve/glm-serve.sh` (or just run `serve/glm-serve.sh sync-overlay`, which copies it there).
 
 3. Bring up the head, then the worker (fill in the `CHANGEME` values or export them beforehand):
 ```bash
@@ -79,7 +79,7 @@ HEAD_IP=CHANGEME IFNAME=CHANGEME ./serve/start-head.sh
 # node B (worker)
 HEAD_IP=CHANGEME MY_IP=CHANGEME IFNAME=CHANGEME ./serve/start-worker.sh
 ```
-`HEAD_IP` and `MY_IP` are the endpoints of the point-to-point link; `IFNAME` is the interface carrying that IP. Cold start takes ~13 minutes (191 GB of weights). The scripts bump `VLLM_ENGINE_READY_TIMEOUT_S` to 3600 s because the default 600 s times out.
+`HEAD_IP` and `MY_IP` are the endpoints of the point-to-point link; `IFNAME` is the interface carrying that IP. Cold start takes ~14 minutes (191 GB of weights; measured 13 min 47 s and 14 min 16 s to READY on the two pairs). The scripts bump `VLLM_ENGINE_READY_TIMEOUT_S` to 3600 s because the default 600 s times out.
 
 4. Order matters here: if an old worker is still hanging around from a previous run, kill it before restarting the head, and only then bring the worker back up. A leftover worker trying to join a new Ray cluster crashes the head with a session-mismatch error. `serve/glm-serve.sh up` handles the sequence automatically (`down` / `up` / `status` / `smoke`).
 
@@ -107,7 +107,7 @@ Catch: because the `glm45` reasoning parser never encounters a closing `</think>
 
 ## Measured (2× DGX Spark, TP=2 over Ray)
 - Engine init took 105 s; KV cache came out to 7.69 GiB per node (`--max-model-len 131072`, fp8_ds_mla layout).
-- Ran 48 requests at 16 concurrent: 0 failures, 61.5 tok/s aggregate, case sat around 64–66 °C.
+- Ran 48 requests at 16 concurrent right after boot: 0 failures, case sat around 64–66 °C. I did not record that run's generation settings (request length, max_tokens, temperature), so I am not quoting a tok/s figure for it — the comparable number at 16 concurrent is the 69.85 tok/s under the fixed ruler below.
 - Bumped it to 32 concurrent for the follow-up production run without changing anything.
 
 ### Stock baseline (single stream)
@@ -119,7 +119,7 @@ Measured on 2026-09-13 with the serve scripts in this repo as shipped (all flags
 
 ### Config-only tuning (2026-09-13)
 
-Dropping `--max-model-len` from the model max 131072 to 16384 (same ruler, same day) cut single-stream TPOT by ~10 %: median 95.3 ms → 86.0 ms (85.2 ms on a repeat run), with aggregate throughput unchanged (94.92 vs 94.66 tok/s at 32 concurrent, 95.63 vs 95.08 at 64) and the KV pool actually bigger under the smaller cap. `serve/glm-serve.sh` now ships 16384: real prompts never come close to 131072 tokens, and the model max just shrank the KV pool that actual requests share.
+Dropping `--max-model-len` from the model max 131072 to 16384 (same ruler, same day) cut single-stream TPOT by ~10 %: median 95.3 ms → 86.0 ms (85.2 ms on a repeat run), with aggregate throughput unchanged (94.92 vs 94.66 tok/s at 32 concurrent, 95.63 vs 95.08 at 64) and the KV pool actually bigger under the smaller cap. `serve/glm-serve.sh` and `serve/start-head.sh` now ship 16384: real prompts never come close to 131072 tokens, and the model max just shrank the KV pool that actual requests share.
 
 What I tried besides the cap, one line each:
 - MTP speculative decoding, native auto-draft (no draft dir): engine died loading the BF16 draft expert weights into the NVFP4-packed expert buffer; the explicit BF16 draft dir failed the same way (the draft expert loader doesn't apply TP sharding in this image).
@@ -142,7 +142,7 @@ From my first attempt to bring it up in the middle of the night on 2026-09-12 to
 | 07:40–11:30 | Dug out root cause, put together the overlay, wrote and ran five standalone unit tests on sm_121 |
 | 11:30–11:50 | Overlay startup attempts 1 and 2 failed |
 | 12:32 | Overlay attempt 3: server finally came up (engine init took 105 s) |
-| 12:35–12:47 | Ran validation: 48 requests, concurrency 16, pushed 61.5 tok/s aggregate |
+| 12:35–12:47 | Ran validation: 48 requests, concurrency 16, 0 failures |
 | ~12:50 | Kicked off the production run for the training corpus at 32 concurrent |
 
 Total startup attempts: 6 on my own build, 3 on the official image, and 3 on the overlay — overlay #3 was the one that finally worked. I tracked wait times and where each failure died in [LOG.md](LOG.md).

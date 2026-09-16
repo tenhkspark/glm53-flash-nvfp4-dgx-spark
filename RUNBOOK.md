@@ -6,7 +6,7 @@ A copy-paste runbook for an AI agent (or a human) to run straight through. Go to
 
 - Two DGX Spark nodes (DGX Spark) connected back-to-back. I used the QSFP ports, but any directly reachable pair of IPs works — the scripts pin Ray and NCCL traffic to these point-to-point addresses.
 - Both nodes need Docker, the official `vllm/vllm-openai:glm53-flash-arm64-cu130` image (built and tested with vLLM v0.28.1rc1.dev580+g385dce36b and flashinfer 0.6.18), and the 191 GB NVIDIA GLM-5.3-Flash-NVFP4 checkpoint.
-- Wherever you run `serve/glm-serve.sh` from (either node or a laptop), you need passwordless SSH access to both machines, plus `rsync`, `jq`, and `md5`/`md5sum` (the script runs `md5 -q` locally and `md5sum` on the remote end). No need to install Ray on the hosts; the container brings it up when it starts.
+- Wherever you run `serve/glm-serve.sh` from (either node or a laptop), you need passwordless SSH access to both machines, plus `rsync`, `jq`, and a checksum tool on both ends (`md5sum`, `shasum`, or `md5` — the script picks whichever it finds and uses the matching command on the nodes). No need to install Ray on the hosts; the container brings it up when it starts.
 - Run the commands from the repository root.
 
 ## Values to fill in
@@ -35,9 +35,9 @@ export WEIGHTS_ROOT=/absolute/path/on/the/nodes
 ./serve/glm-serve.sh smoke 1
 ```
 
-`up` blocks for ~14–15 min; just let it run, don't re-run it in parallel. Here is the expected output per step, with the times I measured on 2026-09-12 at 21:57 using a fresh agent on a second node pair (node A / node B) and only the published files:
+`up` blocks for ~14 min (measured 13 min 47 s and 14 min 16 s to READY on the two pairs); just let it run, don't re-run it in parallel. Here is the expected output per step, with the times I measured on 2026-09-12 at 21:57 using a fresh agent on a second node pair (node A / node B) and only the published files:
 
-1. **`sync-overlay`** — 4.7 s. Copies the overlay and start scripts to every configured node and md5-checks them:
+1. **`sync-overlay`** — 4.7 s. Copies the overlay and start scripts to every configured node and verifies the checksums:
 ```
 [sync] <node A ssh host>
 [sync] <node B ssh host>
@@ -75,4 +75,4 @@ answer: DGX Spark is NVIDIA's compact, palm-sized AI supercomputer (formerly kno
 2. **`No valid attention backend found ... head_size=512, use_mla=True, use_sparse=True`**. Someone forced the KV cache to bfloat16. On sm_121, BF16 leaves no sparse-MLA backend at all; leave `--kv-cache-dtype fp8` as-is. The fix on this hardware is the overlay, not the dtype. (LOG.md #8)
 3. **`ActorHandle objects are not valid across Ray sessions`** right after the weights load. A leftover worker from an earlier run attached to a fresh head. Run `down` before `up` every time (`up` already cleans up the worker first), and don't restart the head while an old worker is still hanging around. (LOG.md #2, #12a)
 4. **Rank 0 dies after graph capture** during FlashInfer SM120 sparse decode autotuning (the mixed-batch dummy run). Autotune is off by default (`--kernel-config '{"enable_flashinfer_autotune": false}'`); do not set `GLM_AUTOTUNE=1` on this hardware. (LOG.md #12b)
-5. **`up` reports FAIL, or not READY within 25 min.** Startup takes ~13 min just loading weights (191 GB) plus engine init, so the scripts set `VLLM_ENGINE_READY_TIMEOUT_S=3600` (the default 600 s will time out). Check the `FAIL:` line and the head container log it prints. Don't retype the `--kernel-config` JSON by hand: inside the double-quoted `bash -lc` string the inner quotes need `\"`, and a single quoting mistake kills the container instantly (cost me 28 minutes once just watching a dead container) — `glm-serve.sh` passes it through a variable so this cannot happen. (LOG.md #12b)
+5. **`up` reports FAIL, or not READY within 25 min.** Startup takes ~14 min end to end (9–12 min just loading the 191 GB of weights, plus engine init), so the scripts set `VLLM_ENGINE_READY_TIMEOUT_S=3600` (the default 600 s will time out). Check the `FAIL:` line and the head container log it prints. Don't retype the `--kernel-config` JSON by hand: inside the double-quoted `bash -lc` string the inner quotes need `\"`, and a single quoting mistake kills the container instantly (cost me 28 minutes once just watching a dead container) — `glm-serve.sh` passes it through a variable so this cannot happen. (LOG.md #12b)

@@ -26,7 +26,7 @@ concat_and_cache_mla ... pe_dim must be 64 for fp8_ds_mla
 No valid attention backend found ... head_size=512, use_mla=True, use_sparse=True
 ```
 
-简单来说就是：开 FP8 KV 会把 cache writer 搞崩，换成 BF16 又完全找不到能用的 attention backend。试了各种参数组合全都不行。我在跑通这套环境的过程中踩到的全部 14 个问题都记在 [LOG.md](LOG.md) 里了。
+简单来说就是：开 FP8 KV 会把 cache writer 搞崩，换成 BF16 又完全找不到能用的 attention backend。试了各种参数组合全都不行。全部 15 个问题都记在 [LOG.md](LOG.md) 里：#1–#14 是我跑通这套环境时踩到的，#15 是后来用发布出来的这套文件做的复现测试。
 
 ## 原因
 - GLM-5.3-Flash 采用了带 NSA 风格 token 选择索引器的 sparse MLA：attention 只针对每个 query 提取 top-k 个选中的 token，而且 attention 本身是不带 RoPE 运行的——即 `qk_rope_head_dim=0`、`qk_nope_head_dim=256` 以及 `kv_lora_rank=512`。
@@ -71,7 +71,7 @@ LOG.md                                  启动日志：15 个踩坑记录、时�
    docker pull vllm/vllm-openai:glm53-flash-arm64-cu130
    # NVIDIA GLM-5.3-Flash-NVFP4 权重，例如放在 ~/models/GLM-5.3-Flash-NVFP4
    ```
-2. 把 `overlay/flashinfer_mla_sparse_sm120.py` 放到两台机器的相同目录下，比如 `~/vllm-overlay/`（或者直接跑 `serve/glm-serve.sh sync-overlay`）。
+2. 把 `overlay/flashinfer_mla_sparse_sm120.py` 放到两台机器的相同目录下：`~/recipe-factory/vllm-overlay/`，也就是 `serve/glm-serve.sh` 里 `REMOTE_OVERLAY` 的默认值（或者直接跑 `serve/glm-serve.sh sync-overlay`，它会拷到这个目录）。
 3. 先拉起 head 节点，再拉起 worker（填好 `CHANGEME` 的具体参数，或者提前 export 环境变量）：
    ```bash
    # 节点 A (head)
@@ -79,7 +79,7 @@ LOG.md                                  启动日志：15 个踩坑记录、时�
    # 节点 B (worker)
    HEAD_IP=CHANGEME MY_IP=CHANGEME IFNAME=CHANGEME ./serve/start-worker.sh
    ```
-   `HEAD_IP` 和 `MY_IP` 是直连链路两端的端点；`IFNAME` 是承载该 IP 的网卡接口。冷启动大概需要 13 分钟（权重有 191 GB）。脚本里把 `VLLM_ENGINE_READY_TIMEOUT_S` 调到了 3600 s，因为默认的 600 s 肯定会超时。
+   `HEAD_IP` 和 `MY_IP` 是直连链路两端的端点；`IFNAME` 是承载该 IP 的网卡接口。冷启动大概需要 14 分钟（权重有 191 GB；两对节点实测到 READY 分别是 13 min 47 s 和 14 min 16 s）。脚本里把 `VLLM_ENGINE_READY_TIMEOUT_S` 调到了 3600 s，因为默认的 600 s 肯定会超时。
 4. 这里的启动顺序不能乱：如果上次运行还残留着旧的 worker 进程，重启 head 前务必先停止它，然后再重新拉起 worker。残留的 worker 尝试加入新 Ray 集群时会直接报 session-mismatch 导致 head 挂掉。`serve/glm-serve.sh up` 已经把这套顺序处理好了（支持 `down` / `up` / `status` / `smoke`）。
 5. FlashInfer autotune 已经被显式关掉了（`--kernel-config '{"enable_flashinfer_autotune": false}'`）。在这个环境下保持开启的话，在 autotune dummy pass 阶段 rank 0 会直接崩掉。
 
@@ -105,7 +105,7 @@ GLM-5.3 的 chat template 会强制塞入一个未闭合的 `<think>` 标签（`
 ## 实测（2× DGX Spark，基于 Ray 的 TP=2）
 
 - 引擎初始化耗时 105 s；单节点 KV cache 占用 7.69 GiB（`--max-model-len 131072`，fp8_ds_mla layout）。
-- 压了 48 个请求，并发开到 16：0 失败，总吞吐 61.5 tok/s，机箱温度基本稳定在 64–66 °C。
+- 服务刚起来时压了 48 个请求，并发开到 16：0 失败，机箱温度基本稳定在 64–66 °C。这一轮我没有记录生成条件（请求长度、max_tokens、temperature），所以这里不给出它的 tok/s —— 并发 16 下可比的数字是下面固定标尺里的 69.85 tok/s。
 - 随后跑生产环境没做任何改动，直接把并发拉到了 32。
 
 ### 原始基线（单流）
@@ -117,7 +117,7 @@ GLM-5.3 的 chat template 会强制塞入一个未闭合的 `<think>` 标签（`
 
 ### 仅改配置的提速（2026-09-13）
 
-把 `--max-model-len` 从模型上限 131072 降到 16384（同日、同一标尺），单流 TPOT 降了约 10%：中位数 95.3 ms → 86.0 ms（复测 85.2 ms），聚合吞吐不变（并发 32 为 94.92 对 94.66 tok/s，64 为 95.63 对 95.08），而且上限调小后 KV 池反而更大。`serve/glm-serve.sh` 现在出厂即为 16384：真实提示词远远到不了 131072 个 token，模型上限只是压缩了实际请求共享的 KV 池。
+把 `--max-model-len` 从模型上限 131072 降到 16384（同日、同一标尺），单流 TPOT 降了约 10%：中位数 95.3 ms → 86.0 ms（复测 85.2 ms），聚合吞吐不变（并发 32 为 94.92 对 94.66 tok/s，64 为 95.63 对 95.08），而且上限调小后 KV 池反而更大。`serve/glm-serve.sh` 和 `serve/start-head.sh` 现在出厂即为 16384：真实提示词远远到不了 131072 个 token，模型上限只是压缩了实际请求共享的 KV 池。
 
 除上限外试过的其他方案（各一句话）：
 - MTP 投机解码，原生自动草稿（不带草稿目录）：引擎在把 BF16 草稿 expert 权重装进 NVFP4 打包的 expert 缓冲区时挂掉；显式 BF16 草稿目录同样失败（此镜像的草稿 expert 加载器不做 TP 分片）。
@@ -140,7 +140,7 @@ GLM-5.3 的 chat template 会强制塞入一个未闭合的 `<think>` 标签（`
 | 07:40–11:30 | 排查出 root cause，拼出 overlay，在 sm_121 上写了 5 个独立的单测并跑通 |
 | 11:30–11:50 | overlay 第 1、2 次启动尝试均告失败 |
 | 12:32 | overlay 第 3 次尝试：服务终于拉起来了（engine 初始化耗时 105 s） |
-| 12:35–12:47 | 跑验证：48 个请求，并发 16，聚合吞吐跑到 61.5 tok/s |
+| 12:35–12:47 | 跑验证：48 个请求，并发 16，0 失败 |
 | ~12:50 | 挂上训练语料，以 32 并发正式起跑生产任务 |
 
 总共尝试启动了这么多次：我自己的构建版本 6 次，官方镜像 3 次，overlay 3 次——最终靠 overlay 第 3 次跑通。等待耗时以及每次挂掉的具体位置，我都记录在 [LOG.md](LOG.md) 里面了。

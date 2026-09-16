@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Modified: this file is the vLLM copy shipped inside the serving image
+# vllm/vllm-openai:glm53-flash-arm64-cu130, changed by me to support no-rope
+# MLA (qk_rope_head_dim == 0) on sm_121; see overlay.diff and NOTICE.
 """SM120 implementation variant for ``FLASHINFER_MLA_SPARSE_SM120``."""
 
 from typing import TYPE_CHECKING, cast
