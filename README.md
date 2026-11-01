@@ -1,3 +1,5 @@
+> **Archived — earlier stage** of the GLM-5.3-Flash NVFP4 work. The two-node version lives in [glm53-flash-nvfp4-2node](https://github.com/tenhkspark/glm53-flash-nvfp4-2node); what runs now is in [dgx-spark-tuning](https://github.com/tenhkspark/dgx-spark-tuning).
+
 # GLM-5.3-Flash NVFP4 on DGX Spark — a one-file vLLM overlay for no-rope sparse MLA
 
 As shipped, the official image does not start on DGX Spark (sm_121). This one-file overlay makes it run, verified on four nodes (two pairs).
